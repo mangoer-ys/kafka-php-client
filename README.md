@@ -1,4 +1,4 @@
-Kafka-PHP-Client
-================
+A Kafka for PHP Client
+======================
 
 

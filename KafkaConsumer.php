@@ -4,10 +4,10 @@
 # Email            : yangshuai-g@360.com
 # Last modified    : 2017-03-16 20:50
 # Filename         : consumer.php
-# Description      : 
-# 
+# Description      :
+#
 #================================================================
- 
+
 
 class KafkaConsumer
 {
@@ -15,74 +15,58 @@ class KafkaConsumer
     private $topic;
     private $func;
 
-    public function __construct()
+    public function __construct($config)
     {
-        $this->initConf();
-        $this->consumer = new RdKafka\KafkaConsumer($this->conf);
+        $this->group  = $config->group;
+        $this->logger = $config->logger;
+        assert(is_object($this->logger));
     }
 
     public function subscribe($topic, $func)
     {
-        $this->consumer->subscribe(array($topic));
         $this->func = $func;
+
+        $conf = KafkaConfig::getConsumerConf($this->group);
+        $this->consumer = new RdKafka\KafkaConsumer($conf);
+        $this->consumer->subscribe(array($topic));
     }
 
     public function consume()
     {
-        while (true) 
+        $count = 0;
+        while (true)
         {
-            $message = $this->consumer->consume(120*10000);
-            switch ($message->err) 
+            $message = $this->consumer->consume(self::TIME_OUT);
+            switch ($message->err)
             {
             case RD_KAFKA_RESP_ERR_NO_ERROR:
-                call_user_func($this->func, $message);
+                $this->_process($message->payload);
+                $this->_commitOffset($count, $message);
                 break;
+
             case RD_KAFKA_RESP_ERR__PARTITION_EOF:
-                echo "No more messages; will wait for more\n";
                 break;
+
             case RD_KAFKA_RESP_ERR__TIMED_OUT:
-                echo "Timed out\n";
                 break;
+
             default:
-                throw new \Exception($message->errstr(), $message->err);
-                break;
+                $this->logger->error("kafka error: err={$message->err}, errstr=" . $message->errstr());
             }
         }
     }
 
-    private function initConf()
+    private function _process($message)
     {
-        $this->conf = new RdKafka\Conf();
-
-        $this->conf->set('group.id', 'Mangoer-ConsumerGroup');
-        $this->conf->set('metadata.broker.list', '10.142.100.51:9092');
-        $this->conf->setDefaultTopicConf($this->getTopicConf());
-
-        $this->conf->setRebalanceCb(function (RdKafka\KafkaConsumer $kafka, $err, array $partitions = null) {
-            switch ($err) 
-            {
-            case RD_KAFKA_RESP_ERR__ASSIGN_PARTITIONS:
-                $kafka->assign($partitions);
-                break;
-
-            case RD_KAFKA_RESP_ERR__REVOKE_PARTITIONS:
-                $kafka->assign(NULL);
-                break;
-
-            default:
-                throw new \Exception($err);
-            }
-        });
+        while (call_user_func($this->func, $message) === false);
     }
 
-    private function getTopicConf()
+    private function _commitOffset(&$count, $message)
     {
-        $topicConf = new RdKafka\TopicConf();
-        $topicConf->set('auto.commit.interval.ms', 100);
-        $topicConf->set('offset.store.method', 'file');
-        $topicConf->set('offset.store.path', sys_get_temp_dir());
-        $topicConf->set('auto.offset.reset', 'smallest');
-
-        return $topicConf;
+        if (++$count >= KafkaConfig::OFFSET_COMMIT_INTERVAL)
+        {
+            $this->consumer->commit($message);
+            $count = 0;
+        }
     }
 }
